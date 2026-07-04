@@ -72,3 +72,13 @@ class CancelAppointmentRequest(BaseModel):
 class CancelAppointmentResponse(BaseModel):
     success: bool
     message: str
+
+class ScheduleAppointmentRequest(BaseModel):
+    patient_name: str = Field(..., description="Full name of the patient")
+    start_time: datetime = Field(..., description="ISO timestamp of the appointment start")
+    reason: str = Field(..., description="Reason for the visit")
+
+class ScheduleAppointmentResponse(BaseModel):
+    success: bool
+    message: str
+    appointment_id: Optional[int] = None
