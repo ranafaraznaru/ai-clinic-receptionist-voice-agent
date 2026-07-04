@@ -46,6 +46,6 @@ async def schedule_appointment(
     service = AppointmentService(db)
     return service.schedule_appointment(
         patient_name=request.patient_name,
-        start_time=request.start_time,
+        start_time_str=request.start_time,
         reason=request.reason
     )

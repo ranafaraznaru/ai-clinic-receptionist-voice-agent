@@ -85,35 +85,52 @@ class AppointmentService:
             message=f"Appointment for {patient_name} on {date_str} has been successfully cancelled."
         )
 
-    def schedule_appointment(self, patient_name: str, start_time: datetime, reason: str) -> ScheduleAppointmentResponse:
-        # 1. Handle Patient (Search or Create minimal)
+    def schedule_appointment(self, patient_name: str, start_time_str: str, reason: str) -> ScheduleAppointmentResponse:
+        # 1. Parse start_time_str
+        try:
+            start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                time_obj = datetime.strptime(start_time_str, "%I:%M %p").time()
+                start_time = datetime.combine(date.today(), time_obj).replace(tzinfo=timezone.utc)
+            except ValueError:
+                return ScheduleAppointmentResponse(
+                    success=False,
+                    message="Invalid time format. Please provide time as '04:00 PM' or a full ISO timestamp."
+                )
+
+        # 2. Handle Patient
         patient_stmt = select(PatientSchema).where(PatientSchema.name == patient_name)
         patient = self.db.execute(patient_stmt).scalar_one_or_none()
 
         if not patient:
-            # In a real app, the AI would collect these. For the Vapi prototype, we create a partial record.
             patient = PatientSchema(
                 name=patient_name,
-                dob=date(1990, 1, 1), # Placeholder
-                email=f"{patient_name.lower().replace(' ', '.')}@example.com", # Placeholder
-                phone="0000000000", # Placeholder
+                dob=date(1990, 1, 1),
+                email=f"{patient_name.lower().replace(' ', '.')}@example.com",
+                phone="0000000000",
                 medical_record_number=f"AUTO-{datetime.now().strftime('%Y%m%d%H%M%S')}"
             )
             self.db.add(patient)
             self.db.commit()
             self.db.refresh(patient)
 
-        # 2. Handle Doctor (Assign to first available doctor for the prototype)
+        # 3. Handle Doctor (Portfolio Mode: Auto-create default doctor if none exist)
         doc_stmt = select(DoctorSchema)
         doctor = self.db.execute(doc_stmt).scalar_one_or_none()
 
         if not doctor:
-            return ScheduleAppointmentResponse(
-                success=False,
-                message="No doctors are currently available in the system to take this appointment."
+            doctor = DoctorSchema(
+                name="Dr. Clinic Default",
+                specialty="General Practitioner",
+                email="default.doctor@clinic.com",
+                phone="000-000-0000"
             )
+            self.db.add(doctor)
+            self.db.commit()
+            self.db.refresh(doctor)
 
-        # 3. Collision Detection
+        # 4. Collision Detection
         end_time = start_time + timedelta(minutes=30)
         collision_stmt = select(AppointmentSchema).where(
             and_(
@@ -131,17 +148,15 @@ class AppointmentService:
                 message=f"I'm sorry, that time slot is no longer available. Please choose another time."
             )
 
-        # 4. Create Appointment
+        # 5. Create Appointment
         new_appointment = AppointmentSchema(
             patient_id=patient.id,
             doctor_id=doctor.id,
             start_time=start_time,
             end_time=end_time,
-            reason=reason, # This field was 'notes' in the schema
+            notes=reason,
             status="scheduled"
         )
-        # Fix: map 'reason' to 'notes' field in schema
-        new_appointment.notes = reason
 
         self.db.add(new_appointment)
         self.db.commit()
