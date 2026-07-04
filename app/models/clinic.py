@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
 # --- Doctor Models ---
@@ -55,3 +55,12 @@ class AppointmentResponse(AppointmentBase):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+# --- Vapi Integration Models ---
+
+class AvailabilityRequest(BaseModel):
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+
+class AvailabilityResponse(BaseModel):
+    available_slots: List[str]
+    message: str
