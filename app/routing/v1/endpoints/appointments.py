@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.dependencies import get_db
 from app.services.appointment_service import AppointmentService
-from app.models.clinic import AvailabilityRequest, AvailabilityResponse
+from app.models.clinic import AvailabilityRequest, AvailabilityResponse, CancelAppointmentRequest, CancelAppointmentResponse
 
 router = APIRouter()
 
@@ -16,3 +16,14 @@ async def check_doctor_availability(
     """
     service = AppointmentService(db)
     return service.check_availability(request.date)
+
+@router.post("/cancel", response_model=CancelAppointmentResponse)
+async def cancel_appointment(
+    request: CancelAppointmentRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Tool for Vapi to cancel an existing appointment for a patient.
+    """
+    service = AppointmentService(db)
+    return service.cancel_appointment(request.date, request.patient_name)

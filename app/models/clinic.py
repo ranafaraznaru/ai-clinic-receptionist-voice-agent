@@ -64,3 +64,11 @@ class AvailabilityRequest(BaseModel):
 class AvailabilityResponse(BaseModel):
     available_slots: List[str]
     message: str
+
+class CancelAppointmentRequest(BaseModel):
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    patient_name: str = Field(..., description="Full name of the patient")
+
+class CancelAppointmentResponse(BaseModel):
+    success: bool
+    message: str
