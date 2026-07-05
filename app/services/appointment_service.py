@@ -3,22 +3,46 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, and_
 from app.database.schema.appointment_schema import AppointmentSchema
 from app.database.schema.patient_schema import PatientSchema
-from app.database.schema.doctor_schema import DoctorSchema
 from app.models.clinic import AvailabilityResponse, CancelAppointmentResponse, ScheduleAppointmentResponse
 
 class AppointmentService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _parse_flexible_date(self, date_str: str) -> date:
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+        clean_date = date_str.lower()
+        for suffix in ["st", "nd", "rd", "th"]:
+            if " " in clean_date:
+                parts = clean_date.split()
+                cleaned_parts = [p.replace(suffix, "") if p.endswith(suffix) else p for p in parts]
+                clean_date = " ".join(cleaned_parts)
+
+        formats = ["%d %B", "%B %d", "%d %b", "%b %d"]
+
+        for fmt in formats:
+            try:
+                parsed_date = datetime.strptime(clean_date, fmt)
+                return parsed_date.replace(year=datetime.now().year).date()
+            except ValueError:
+                continue
+
+        raise ValueError(f"Could not parse date: {date_str}")
+
     def check_availability(self, check_date_str: str) -> AvailabilityResponse:
         try:
-            check_date = datetime.strptime(check_date_str, "%Y-%m-%d").date()
+            check_date = self._parse_flexible_date(check_date_str)
         except ValueError:
-            return AvailabilityResponse(available_slots=[], message="Invalid date format. Please use YYYY-MM-DD.")
+            return AvailabilityResponse(available_slots=[], message="I couldn't understand the date. Please use a format like '2026-07-06' or '6 July'.")
 
         start_of_day = datetime.combine(check_date, datetime.min.time()).replace(hour=9, tzinfo=timezone.utc)
         end_of_day = datetime.combine(check_date, datetime.min.time()).replace(hour=17, tzinfo=timezone.utc)
 
+        # Since we removed doctor_id, we check if ANY appointment exists in that slot
         stmt = select(AppointmentSchema).where(
             and_(
                 AppointmentSchema.start_time >= start_of_day,
@@ -50,31 +74,26 @@ class AppointmentService:
 
     def cancel_appointment(self, date_str: str, patient_name: str) -> CancelAppointmentResponse:
         try:
-            check_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            check_date = self._parse_flexible_date(date_str)
         except ValueError:
-            return CancelAppointmentResponse(success=False, message="Invalid date format. Please use YYYY-MM-DD.")
-
-        patient_stmt = select(PatientSchema).where(PatientSchema.name == patient_name)
-        patient = self.db.execute(patient_stmt).scalar_one_or_none()
-
-        if not patient:
-            return CancelAppointmentResponse(success=False, message=f"Could not find any patient record for {patient_name}.")
+            return CancelAppointmentResponse(success=False, message="I couldn't understand the date. Please use a format like '2026-07-06' or '6 July'.")
 
         start_of_day = datetime.combine(check_date, datetime.min.time()).replace(tzinfo=timezone.utc)
         end_of_day = datetime.combine(check_date, datetime.max.time()).replace(tzinfo=timezone.utc)
 
+        # Directly query the appointments table using patient_name (Denormalized)
         appt_stmt = select(AppointmentSchema).where(
             and_(
-                AppointmentSchema.patient_id == patient.id,
+                AppointmentSchema.patient_name.ilike(f"%{patient_name}%"),
                 AppointmentSchema.start_time >= start_of_day,
                 AppointmentSchema.start_time <= end_of_day,
                 AppointmentSchema.status != "cancelled"
             )
         )
-        appointment = self.db.execute(appt_stmt).scalar_one_or_none()
+        appointment = self.db.execute(appt_stmt).scalars().first()
 
         if not appointment:
-            return CancelAppointmentResponse(success=False, message=f"No active appointment found for {patient_name} on {date_str}.")
+            return CancelAppointmentResponse(success=False, message=f"No active appointment found for {patient_name} on {check_date.strftime('%B %d')}.")
 
         appointment.status = "cancelled"
         self.db.commit()
@@ -82,11 +101,10 @@ class AppointmentService:
 
         return CancelAppointmentResponse(
             success=True,
-            message=f"Appointment for {patient_name} on {date_str} has been successfully cancelled."
+            message=f"Appointment for {appointment.patient_name} on {check_date.strftime('%B %d')} has been successfully cancelled."
         )
 
     def schedule_appointment(self, patient_name: str, start_time_str: str, reason: str) -> ScheduleAppointmentResponse:
-        # 1. Parse start_time_str
         try:
             start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
         except ValueError:
@@ -99,9 +117,8 @@ class AppointmentService:
                     message="Invalid time format. Please provide time as '04:00 PM' or a full ISO timestamp."
                 )
 
-        # 2. Handle Patient
-        patient_stmt = select(PatientSchema).where(PatientSchema.name == patient_name)
-        patient = self.db.execute(patient_stmt).scalar_one_or_none()
+        patient_stmt = select(PatientSchema).where(PatientSchema.name.ilike(f"%{patient_name}%"))
+        patient = self.db.execute(patient_stmt).scalars().first()
 
         if not patient:
             patient = PatientSchema(
@@ -115,32 +132,15 @@ class AppointmentService:
             self.db.commit()
             self.db.refresh(patient)
 
-        # 3. Handle Doctor (Portfolio Mode: Auto-create default doctor if none exist)
-        doc_stmt = select(DoctorSchema)
-        doctor = self.db.execute(doc_stmt).scalar_one_or_none()
-
-        if not doctor:
-            doctor = DoctorSchema(
-                name="Dr. Clinic Default",
-                specialty="General Practitioner",
-                email="default.doctor@clinic.com",
-                phone="000-000-0000"
-            )
-            self.db.add(doctor)
-            self.db.commit()
-            self.db.refresh(doctor)
-
-        # 4. Collision Detection
         end_time = start_time + timedelta(minutes=30)
         collision_stmt = select(AppointmentSchema).where(
             and_(
-                AppointmentSchema.doctor_id == doctor.id,
                 AppointmentSchema.status != "cancelled",
                 AppointmentSchema.start_time < end_time,
                 AppointmentSchema.end_time > start_time
             )
         )
-        collision = self.db.execute(collision_stmt).scalar_one_or_none()
+        collision = self.db.execute(collision_stmt).scalars().first()
 
         if collision:
             return ScheduleAppointmentResponse(
@@ -148,10 +148,9 @@ class AppointmentService:
                 message=f"I'm sorry, that time slot is no longer available. Please choose another time."
             )
 
-        # 5. Create Appointment
         new_appointment = AppointmentSchema(
             patient_id=patient.id,
-            doctor_id=doctor.id,
+            patient_name=patient_name,
             start_time=start_time,
             end_time=end_time,
             notes=reason,
