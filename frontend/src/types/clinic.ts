@@ -1,5 +1,3 @@
-import { z } from 'zod'; // If I add zod later, but using standard types for now
-
 export interface AvailabilityRequest {
     date: string;
 }
